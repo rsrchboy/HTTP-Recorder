@@ -45,6 +45,29 @@ sub Log {
     close SCRIPT;
 }
 
+sub LogComment {
+    my $self = shift;
+    my $comment = shift;
+
+    my $scriptfile = $self->{'file'};
+    open (SCRIPT, ">>$scriptfile");
+    print SCRIPT "# $comment\n";
+    close SCRIPT;    
+}
+
+sub LogLine {
+    my $self = shift;
+    my %args = (
+	line => "",
+	@_
+	);
+
+    my $scriptfile = $self->{'file'};
+    open (SCRIPT, ">>$scriptfile");
+    print SCRIPT $args{line}, "\n";
+    close SCRIPT;    
+}
+
 sub GotoPage {
     my $self = shift;
     my %args = (
@@ -63,8 +86,14 @@ sub FollowLink {
 	@_
 	);
 
-    $self->Log("follow_link", 
-	"text => \"$args{text}\", n => \"$args{index}\"");
+    if ($args{text}) {
+	$args{text} =~ s/"/\\"/g;
+	$self->Log("follow_link", 
+		   "text => \"$args{text}\", n => \"$args{index}\"");
+    } else {
+	$self->Log("follow_link", 
+		   "n => \"$args{index}\"");
+    }
 }
 
 sub SetField {
@@ -82,7 +111,11 @@ sub Submit {
 	@_
 	);
 
-    $self->Log("submit_form", "form_number => \"$args{index}\"");
+    if ($args{name}) {
+	$self->Log("submit_form", "form_name => \"$args{name}\"");
+    } else {
+	$self->Log("submit_form", "form_number => \"$args{index}\"");
+    }
 }
 
 1;

@@ -1,3 +1,6 @@
+HTTP::Recorder
+--------------
+
 WHAT THIS IS
 
 This is a browser-independent recorder for recording interactions with
@@ -16,7 +19,7 @@ user.
 
 AUTHOR
 
-Copyright 2003 by Linda Julien <leira@cpan.org>
+Copyright 2003-2004 by Linda Julien <leira@cpan.org>
 
 Released under the GNU Public License.
 
