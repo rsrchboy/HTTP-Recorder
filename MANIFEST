@@ -1,0 +1,8 @@
+lib/HTTP/Recorder.pm
+lib/HTTP/Recorder/Logger.pm
+lib/HTTP/Logger.pm
+Makefile.PL
+t/load.t
+t/pod.t
+MANIFEST
+README
