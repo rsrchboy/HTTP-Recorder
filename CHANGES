@@ -1,0 +1,48 @@
+Revision history for HTTP::Recorder
+-----------------------------------
+
+0.03_01 1 March 2004
+
+    Support for recording SSL
+
+    Added a UI
+    - Available via control URL rather than a JS popup
+    - Update, reset clear, download features
+    - "Goto page" functionality
+
+    Rewriting improvements
+    - Support 'link' tag
+    - Support link anchors
+    - Set base URL if necessary (so relative links will be properly followed)
+    - Don't try to set the value of submit buttons in a form
+    - support multipart/form-data
+
+    Additional documentation
+
+    Logging improvements
+    - Add SetFieldsAndSubmit method to Logger; use it
+    - Set form name before trying to set form fields.
+    - Use form names when available, rather than form numbers.
+
+0.02 15 February 2004
+
+    Improved rewriting for pages with JavaScript:
+    - Don't rewrite href="javascript:XXX" links or text inside them
+    - Change the way forms are re-written, so that JavaScript won't fail.
+
+    Use link indices as well as names (supports multiple links of the
+    same name on a single page).
+
+    Preserve page titles.
+
+    Use form names when available, rather than form numbers.
+
+    Keep attributes in their original order on rewrite.
+
+    Support links with quotes (") in them.
+
+    Only try to rewrite text/ content (images, etc. won't be
+    corrupted).
+
+    ** Many thanks to Jason Gessner <jason@multiply.org> for his
+    patches and feedback.

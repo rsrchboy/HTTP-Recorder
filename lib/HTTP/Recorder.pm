@@ -10,7 +10,7 @@ Version 0.02
 
 =cut
 
-our $VERSION = "0.02";
+our $VERSION = "0.03_01";
 
 =head1 SYNOPSIS
 
@@ -19,28 +19,37 @@ responses so that additional requests can be recorded.
 
 Set it up like this:
 
-    my $proxy = HTTP::Proxy->new;
+    #!/usr/bin/perl
 
-    # set HTTP::Recorder as the agent
-    my $agent = HTTP::Recorder->new( file => "/tmp/tmpfile",
-				     showwindow => 1);
+    use HTTP::Proxy;
+    use HTTP::Recorder;
+
+    my $proxy = HTTP::Proxy->new();
+
+    # create a new HTTP::Recorder object
+    my $agent = new HTTP::Recorder;
+
+    # set the log file (optional)
+    $agent->file("/tmp/myfile");
+
+    # set HTTP::Recorder as the agent for the proxy
     $proxy->agent( $agent );
 
-    # you may need to set the host
-    # $proxy->host( "www.example.com" );
-
+    # start the proxy
     $proxy->start();
 
-Then, tell your web browser to use your proxy, and the script will be
+    1;
+
+Then, tell your web browser to use this proxy, and the script will be
 recorded in the specified file.
 
-If showwindow is set to 1, a popup window will display the current
-script after each action.
+=head2 SSL sessions
 
-=head2 Javascript & SSL
+As of version 0.03, L<HTTP::Recorder> can record SSL sessions.
 
-HTTP::Recorder won't record Javascript actions, or pages delivered via
-SSL.
+To begin recording an SSL session, go to the control URL
+(http://http-recorder/ by default), and enter the initial URL.
+Then, interact with the web site as usual.
 
 =head2 Script output
 
@@ -59,7 +68,6 @@ use HTTP::Recorder::Logger;
 use URI::Escape qw(uri_escape uri_unescape);
 
 our @ISA = qw( LWP::UserAgent );
-our ($Logger, $prefix, $showwindow);
 
 =head1 Functions
 
@@ -72,98 +80,183 @@ Creates and returns a new L<HTTP::Recorder> object, referred to as the 'agent'.
 sub new {
     my $class = shift;
 
-    my %args = (
-		showwindow  => 0,
-		file  => "",
-		prefix => "rec",
-		@_
-		);
+    my %args = ( @_ );
 
     my $self = $class->SUPER::new( %args );
     bless $self, $class;
 
-    $prefix = $args{prefix};
-    $showwindow = $args{showwindow};
-
-    if ($args{logger}) {
-	$Logger = $args{logger};
-    } else {
-	$Logger = new HTTP::Recorder::Logger(file => $args{file});
-    }
+    $self->{prefix} = $args{prefix} || "rec";
+    $self->{showwindow} = $args{showwindow} || 0;
+    $self->{control} = $args{control} || "http-recorder";
+    $self->{logger} = $args{logger} || 
+	new HTTP::Recorder::Logger(file => $args{file});
 
     return $self;
+}
+
+=head2 B<$agent->prefix([$value])>
+
+Get or set the prefix string that L<HTTP::Recorder> uses for rewriting
+responses.
+
+=cut
+
+sub prefix { shift->_elem('prefix',      @_); }
+
+=head2 B<$agent->showwindow([0|1])>
+
+Get or set whether L<HTTP::Recorder> opens a JavaScript popup window,
+displaying the recorder's control panel.
+
+=cut
+
+sub showwindow { shift->_elem('showwindow',      @_); }
+
+=head2 B<$agent->control([$value])>
+
+Get or set the URL of L<HTTP::Recorder>'s control panel.  By default,
+the control URL is 'http-proxy'.
+
+The control URL will display a control panel which will allow you to
+view and edit the current script.
+
+=cut
+
+sub control { shift->_elem('control',      @_); }
+
+=head2 B<$agent->logger([$value])>
+
+Get or set the logger object.  The default logger is a
+L<HTTP::Recorder::Logger>, which generates L<WWW::Mechanize> scripts.
+
+=cut
+
+sub logger { shift->_elem('logger',      @_); }
+
+=head2 B<$agent->file([$value])>
+
+Get or set the filename for generated scripts.  The default is
+'/tmp/tmpfile'.
+
+=cut
+
+sub file {
+    my $self = shift;
+    my $file = shift;
+
+    $self->{logger}->file($file) if $file;
 }
 
 sub send_request {
     my $self = shift;
     my $request = shift;
 
-    modify_request ($request);
+    my $response;
 
-    my $response = $self->SUPER::send_request( $request );
+    # special handling if the URL is the control URL
+    if ($request->uri->host eq $self->{control}) {
 
-    my $content_type = $response->headers->header('Content-type') || "";
+	# get the arguments passed from the form
+	my $arghash;
+	$arghash = extract_values($request);
+	
+	# there may be an action we need to perform
+	if (exists $arghash->{updatescript}) {
+	    my $script = uri_unescape($arghash->{ScriptContent});
+	    $self->{logger}->SetScript("$script");
+	} elsif (exists $arghash->{clearscript}) {
+	    $self->{logger}->SetScript("");
+	} elsif (exists $arghash->{goto}) {
+	    my $url = uri_unescape($arghash->{url});
 
-    # don't try to modify the content unless it's text/<something>
-    if ($content_type =~ m#^text/#i) {
-	modify_response($response);
+	    my $r = new HTTP::Request("GET", $url);
+	    my $response = $self->send_request( $r );
+
+	    return $response;
+	}
+	
+	my ($h, $content);
+	if (exists $arghash->{savescript}) {
+	    $h = HTTP::Headers->new(Content_Type => 'text/plain');
+	    my @script = $self->{logger}->GetScript();
+	    $content = join('', @script);
+	} else {
+	    $h = HTTP::Headers->new(Content_Type => 'text/html');
+	    $content = $self->get_recorder_content();
+	}
+	
+	$response = HTTP::Response->new(200,
+					"",
+					$h,
+					$content,
+					);
+    } else {
+	$request = $self->modify_request ($request);
+
+	$response = $self->SUPER::send_request( $request );
+
+	my $content_type = $response->headers->header('Content-type') || "";
+
+	# don't try to modify the content unless it's text/<something>
+	if ($content_type =~ m#^text/#i) {
+	    $self->modify_response($response);
+	}
     }
 
     return $response;
 }
 
 sub modify_request {
+    my $self = shift;
     my $request = shift;
 
-    # get the name/value pairs from the body
-    my $args = $request->content;
-
-    # get the name/value pairs from the url
-    my @parts = split(/\?/, $request->uri);
-
-    # concatenate them and extract key/value pairs
-    $args .= "&" if $args;
-    $args .= $parts[1] if $parts[1];
-    my $values = extract_values($args);
+    my $values = extract_values($request);
 
     # log the actions
-    my $action = $values->{"$prefix-action"};
+    my $action = $values->{"$self->{prefix}-action"};
+
     my $referer = $request->headers->referer;
     if (!$action) {
 	if (!$referer) {
 	    my $uri = $request->uri;
-	    unmodify(\$uri);
+	    $self->unmodify(\$uri);
 
 	    # log a blank line to give the code a little breathing room
-	    $Logger->LogLine();
-
-	    $Logger->GotoPage(url => $uri);
+	    $self->{logger}->LogLine();
+	    $self->{logger}->GotoPage(url => $uri);
 	}
     } elsif ($action eq "follow") {
-	$Logger->FollowLink(text => $values->{"$prefix-text"} || "",
-			    index => $values->{"$prefix-index"} || "",
-			    url => $values->{"$prefix-index"});
+	$self->{logger}->FollowLink(text => $values->{"$self->{prefix}-text"} || "",
+			    index => $values->{"$self->{prefix}-index"} || "",
+			    url => $values->{"$self->{prefix}-url"});
     } elsif ($action eq "submitform") {
+	my %fields;
+	my ($btn_name, $btn_value, $btn_number);
 	foreach my $param (keys %$values) {
-	    if ($param =~ /^$prefix-form-(\d+)-(.*?)$/) {
+	    if ($param =~ m/^$self->{prefix}-form-(\d+)-submit-(.*?)$/) {
 		my $temp = $param;
-		$temp =~ s/^$prefix-form-(\d+)-//g;
-		$Logger->SetField(name => $temp,
-				  value => $values->{$temp},
-				  );
+		$temp =~ s/^$self->{prefix}-form-(\d+)-submit-//;
+		$btn_name = $temp if $values->{$temp};
+	    }
+	    if ($param =~ m/^$self->{prefix}-form-(\d+)-(.*?)$/) {
+		my $temp = $param;
+		$temp =~ s/^$self->{prefix}-form-(\d+)-//g;
+		$fields{$temp} = $values->{$temp} if $values->{$temp};
 	    }
 	}
 
-	$Logger->Submit(name => $values->{"$prefix-formname"}, 
-			index => $values->{"$prefix-formnumber"});
+	$self->{logger}->SetFieldsAndSubmit(name => $values->{"$self->{prefix}-formname"}, 
+					    number => $values->{"$self->{prefix}-formnumber"},
+					    fields => \%fields,
+					    button_name => $btn_name);
 
 	# log a blank line to give the code a little breathing room
-	$Logger->LogLine();
+	$self->{logger}->LogLine();
     }
 
     # undo what we've done
-    $request->uri(unmodify($request->uri));
-    $request->content(unmodify($request->content));
+    $request->uri($self->unmodify($request->uri));
+    $request->content($self->unmodify($request->content));
 
     # reset the Content-Length (if needed) to prevent warnings from
     # HTTP::Protocol
@@ -171,25 +264,74 @@ sub modify_request {
 	$request->headers->header('Content-Length' => length($request->content()) );
 	
     }
+
+    my $https = $values->{"$self->{prefix}-https"};
+    if ( $https && $https == 1) {
+	my $uri = $request->uri;
+	$uri =~ s/^http:/https:/i;
+
+	$request = new HTTP::Request($request->method, 
+				     $uri, 
+				     $request->headers, 
+				     $request->content);
+	
+    }	    
+
+    return $request;
 }
 
 sub unmodify {
+    my $self = shift;
     my $content = shift;
 
+    return $content unless $content;
+
     # get rid of the stuff we added
-    $content =~ s/($prefix-form-(\d+)-)//g;
+    my $prefix = $self->{prefix};
+
     $content =~ s/$prefix-(.*?)\?(.*?)&//g;
     $content =~ s/$prefix-(.*?)&//g;
     $content =~ s/$prefix-(.*?)$//g;
+    $content =~ s/&$//g;
     $content =~ s/\?$//g;
 
     return $content;
 }
 
 sub extract_values {
-    my $content = shift;
+    my $request = shift;
 
     my $values = {};
+
+    if ($request->headers->content_type eq 'multipart/form-data') {
+	my $content = $request->content;
+	my @segments = split(/--+/, $content);
+	foreach (@segments) {
+	    next unless $_;
+	    $_ =~ s/.*Content-Disposition: //s;
+	    $_ =~ s/\r+/\n/sg;
+	    $_ =~ s/\n+/; /sg;
+	    my @fields = split(/; /, $_);
+	    next unless $fields[1];
+	    $fields[1] =~ s/name="(.*)"/$1/g;
+	    next unless $fields[2];
+	    if ($fields[2] =~ m/^filename/) {
+		$fields[2] = "file here!!";
+	    } else {
+		$fields[2] =~ s/\n//sg;
+	    }
+	    $values->{$fields[1]} = $fields[2];
+
+	}
+    }
+
+    my $content;
+    if ($request->method eq "POST") {
+	$content = $request->content;
+    } else {
+	my @foo = split(/\?/,$request->uri);
+	$content = $foo[1];
+    }
 
     return () unless defined $content;
 
@@ -204,15 +346,16 @@ sub extract_values {
             ($key, $val) = m/^(.*?)=(.*)/;
             $val = (defined $val) ? uri_unescape($val) : '';
             $key = uri_unescape($key);
-	    
+
 	    $values->{$key} = $val if $val;
-        }
+	}
     }
 
     return $values;
 }
 
 sub modify_response {
+    my $self = shift;
     my $response = shift;
     my @forms;
     my $formnumber = 0;
@@ -226,8 +369,9 @@ sub modify_response {
     my $newcontent = "";
     my %links;
 
-    my $isjs = 0;
-    my $formfield = "";
+    my $js_href = 0;
+    my $in_head = 0;
+    my $basehref;
     while (my $token = $p->get_token()) {
 	if (@$token[0] eq 'S') {
 	    my $tagname = @$token[1];
@@ -235,11 +379,16 @@ sub modify_response {
 	    my $oldaction;
 	    my $text;
 
-	    if ($tagname eq 'html') {
-		if ($showwindow) {
-		    $newcontent .= script_popup("la la la");
+	    if ($tagname eq 'head') {
+		$in_head = 1;
+	    } elsif ($in_head && $tagname eq 'base') {
+		$basehref = new URI($attrs->{'base'});
+	    } elsif ($tagname eq 'html') {
+		if ($self->{showwindow}) {
+		    $newcontent .= $self->script_popup();
 		}
-	    } elsif ($tagname eq 'a' && $attrs->{'href'}) {
+	    } elsif (($tagname eq 'a' || $tagname eq 'link') && 
+		     $attrs->{'href'}) {
 		my $t = $p->get_token();
 		if (@$t[0] eq 'T') {
 		    $text = @$t[1];
@@ -258,17 +407,45 @@ sub modify_response {
 		    $index = $linknumber;
 		}
 		if ($attrs->{'href'} =~ m/^javascript:/i) {
-		    $isjs = 1;
+		    $js_href = 1;
 		} else {
-		    $attrs->{'href'} = rewrite_href($attrs->{'href'}, 
-						    $text, 
-						    $index);
+		    if ($tagname eq 'a') {
+			$attrs->{'href'} = 
+			    $self->rewrite_href($attrs->{'href'}, 
+						$text, 
+						$index,
+						$response->base);
+		    } elsif ($tagname eq 'link') {
+			$attrs->{'href'} = 
+			    $self->rewrite_linkhref($attrs->{'href'}, 
+						    $response->base);
+		    }
 		}
 		$linknumber++;
 	    } elsif ($tagname eq 'form') {
 		push @forms, $token;
 		$formnumber++;
 	    }
+
+	    # put the hidden field before the real field
+	    # so that it won't be inside
+	    if (!$js_href && 
+		$tagname ne 'form' && scalar @forms == 1) {
+		# TODO: rewrite submit buttons to support multiple
+		my $formfield;
+		if ($attrs->{name} && $attrs->{type} && 
+		    $attrs->{type} =~ m/submit/i) {
+		    $formfield = ("$self->{prefix}-form-".
+				  $formnumber."-submit-".$attrs->{name});
+		} elsif ($attrs->{name}) {
+		    $formfield = ("$self->{prefix}-form-".
+				  $formnumber."-".$attrs->{name});
+		}
+		if ($formfield) {
+		    $newcontent .= "<input type=\"hidden\" name=\"$formfield\" value=1>\n";
+		}
+	    }
+
 	    $newcontent .= ("<".$tagname);
 
 	    # keep the attributes in their original order
@@ -277,33 +454,33 @@ sub modify_response {
 		# only rewrite if 
 		# - it's not part of a javascript link
 		# - it's not a hidden field
-		if (!$isjs && 
-		    $attr eq 'name' && $tagname ne 'form' 
-		    && scalar @forms == 1) {
-		    $formfield = ("$prefix-form-".
-				  $formnumber."-".$attrs->{$attr});
-		}
 		$newcontent .= (" ".$attr."=\"".$attrs->{$attr}."\"");
 	    }
 	    $newcontent .= (">\n");
-	    if ($formfield) {
-		$newcontent .= "<input type=\"hidden\" name=\"$formfield\" value=1>\n";
-		$formfield = "";
-	    }
 	    if ($tagname eq 'form') {
 		if (scalar @forms == 1) {
-		    $newcontent .= rewrite_form_content($attrs->{name}, 
-							$formnumber);
+		    $newcontent .= $self->rewrite_form_content($attrs->{name} || "",
+							       $formnumber,
+							       $response->base);
 		}
 	    }
 	} elsif (@$token[0] eq 'E') {
-	    $newcontent .= ("</");
 	    my $tagname = @$token[1];
+	    if ($tagname eq 'head') {
+		if (!$basehref) {
+		    $basehref = $response->base;
+		    $basehref->scheme('http') if $basehref->scheme eq 'https';
+		    $newcontent .= "<base href=\"" . $basehref . "\">\n";
+		}
+		$basehref = "";
+		$in_head = 0;
+	    }
+	    $newcontent .= ("</");
 	    $newcontent .= ($tagname.">\n");
 	    if ($tagname eq 'form') {
 		pop @forms;
-	    } elsif ($tagname eq 'a') {
-		$isjs = 0;
+	    } elsif ($tagname eq 'a' || $tagname eq 'link') {
+		$js_href = 0;
 	    }
 	} else {
 	    $newcontent .= (@$token[1]);
@@ -316,84 +493,146 @@ sub modify_response {
 }
 
 sub rewrite_href {
+    my $self = shift;
     my $href = shift || "";
     my $text = shift || "";
     my $index = shift || 1;
+    my $url = shift;
+
+    my @parts = split(/\?/, $href);
+    my $realhref = uri_escape($href);
+    my $realargs = $parts[1] || "";
+    my $base = $parts[0];
+
+    my $https = 0;
+    $https = 1 if $url->scheme eq 'https';
+
+    # the link text might have special characters in it
+    $text = uri_escape($text);
+
+    # figure out if the link is an anchor on the same page
+    my $anchor;
+    if ($href =~ m/^#/) {
+	$anchor = $href;
+	$base = "";
+    }
+
+    $href = "$base?$self->{prefix}-url=$realhref";
+    $href .= "&$self->{prefix}-https=$https" if $https;
+    $href .= "&$realargs" if $realargs;
+    $href .= "&$self->{prefix}-action=follow";
+    $href .= "&$self->{prefix}-text=$text";
+    $href .= "&$self->{prefix}-index=$index";
+    $href .= $anchor if $anchor;
+
+    return $href;
+}
+
+sub rewrite_linkhref {
+    my $self = shift;
+    my $href = shift || "";
+    my $url = shift;
 
     my @parts = split(/\?/, $href);
     my $realhref = uri_escape($href);
     my $realargs = $parts[1] || "";
 
-    # the link text might have special characters in it
-    $text = uri_escape($text);
+    my $https = 0;
+    $https = 1 if $url->scheme eq 'https';
+    my $base = $parts[0];
 
-    # this does not deal with anchored links at all. 
-    $href =~ s/(.*)/$parts[0]?$prefix-action=follow&$prefix-text=$text&$prefix-index=$index&$prefix-url=$realhref&$realargs/;
+    # figure out if the link is an anchor on the same page
+    my $anchor;
+    if ($href =~ m/^#/) {
+	$anchor = $href;
+	$base = "";
+    }
+
+    $href = "$base?$self->{prefix}-url=$realhref";
+    $href .= "&$self->{prefix}-https=$https" if $https;
+    $href .= "&$realargs" if $realargs;
+    $href .= "&$self->{prefix}-action=norecord";
+    $href .= $anchor if $anchor;
 
     return $href;
 }
 
 sub rewrite_form_content {
+    my $self = shift;
     my $name = shift || "";
     my $number = shift;
     my $fields;
+    my $url = shift;
 
-    $fields .= ("<input type=hidden name=\"$prefix-action\" value=\"submitform\">\n");
-    $fields .= ("<input type=hidden name=\"$prefix-formname\" value=\"$name\">\n");
-    $fields .= ("<input type=hidden name=\"$prefix-formnumber\" value=\"$number\">\n");
+    my $https = 1 if ($url =~ m/^https/i);
+
+    $fields .= ("<input type=hidden name=\"$self->{prefix}-action\" value=\"submitform\">\n");
+    $fields .= ("<input type=hidden name=\"$self->{prefix}-formname\" value=\"$name\">\n");
+    $fields .= ("<input type=hidden name=\"$self->{prefix}-formnumber\" value=\"$number\">\n");
+    if ($https) {
+    $fields .= ("<input type=hidden name=\"$self->{prefix}-https\" value=\"$https\">\n");
+    }
 
     return $fields;
 }
 
-sub script_popup {
-    my $js = <<EOF;
-mywin = window.open("", "script", "height=400,width=400,toolbar=no,scrollbars=yes,resizable=yes");
-mywin.document.open();
-mywin.document.write('<HTML><BODY>\\n');
-mywin.document.write('<FORM>\\n');
-mywin.document.write('<table>\\n');
-mywin.document.write('  <tr>\\n');
-mywin.document.write('    <th>\\n');
-mywin.document.write('      Current script\\n');
-mywin.document.write('    </th>\\n');
-mywin.document.write('  </tr>\\n');
-mywin.document.write('  <tr>\\n');
-mywin.document.write('    <td align=center>\\n');
-mywin.document.write('      <TEXTAREA name="UpdateScript" cols=55 rows=20>');
-EOF
+sub get_recorder_content {
+    my $self = shift;
 
-    my @script = $Logger->GetScript();
+    my @script = $self->{logger}->GetScript();
+    my $script = "";
     foreach my $line (@script) {
 	next unless $line;
 	$line =~ s/\n//g;
 	$line =~ s/'/\\'/g;
-	$js .= "mywin.document.write('$line\\n');\n";
+	$script .= "$line\n";
     }
 
-#mywin.document.write('        <td><INPUT TYPE=\"SUBMIT\" name=\"updatescript\" VALUE=\"Update\"></td>\\n');
-#mywin.document.write('        <td><INPUT TYPE=\"SUBMIT\" name=\"clearscript\" VALUE=\"Clear\"></td>\\n');
-#mywin.document.write('        <td><INPUT TYPE=\"RESET\"></td>\\n');
-#mywin.document.write('      <a href="$prefix-action=savescript">Download</a>\\n');
+    my $content = <<EOF;
+<html><body>
+<FORM method="POST" action="http://$self->{control}/">
+<table>
+  <tr>
+    <td>
+Goto page: <input name="url" size=40>
+<input type=submit name="goto" value="Go">
+    </td>
+  </tr>
+  <tr>
+    <td>
+Current Script:
+    </td>
+  </tr>
+  <tr>
+    <td>
+<textarea name="ScriptContent" cols=60 rows=20>
+$script
+</textarea>
+    </td>
+  </tr>
+  <tr>
+    <td align=center>
+      <INPUT TYPE="SUBMIT" name="updatescript" VALUE="Update">
+      <INPUT TYPE="SUBMIT" name="clearscript" VALUE="Clear">
+      <INPUT TYPE="RESET">
+      <INPUT TYPE="SUBMIT" name="savescript" VALUE="Download">
+      <INPUT TYPE="BUTTON" VALUE="Close" onClick="self.close()">
+</td>
+    </td>
+  </tr>
+<table>
+</body></html>
+EOF
 
-    $js .= <<EOF;
-mywin.document.write('</TEXTAREA>');
-mywin.document.write('    </td>\\n');
-mywin.document.write('  </tr>\\n');
-mywin.document.write('  <tr>\\n');
-mywin.document.write('    <td align=center>\\n');
-mywin.document.write('      <table><tr>\\n');
-mywin.document.write('        <td><INPUT TYPE=\"BUTTON\" VALUE="Close Window" onClick="self.close()"></td>\\n');
-mywin.document.write('      </tr></table>\\n');
-mywin.document.write('    </td>\\n');
-mywin.document.write('  </tr>\\n');
-mywin.document.write('  <tr>\\n');
-mywin.document.write('    <td align=center>\\n');
-mywin.document.write('    </td>\\n');
-mywin.document.write('  </tr>\\n');
-mywin.document.write('<table>\\n');
-mywin.document.write('</FORM>\\n');
-mywin.document.write('</BODY></HTML>\\n');
-mywin.document.close();
+    return $content;
+}
+
+sub script_popup {
+    my $self = shift;
+
+    my $url = "http://" . $self->control . "/";
+    my $js = <<EOF;
+mywin = window.open("$url", "script", "height=400,width=400,toolbar=no,scrollbars=yes,resizable=yes");
 EOF
 
 return <<EOF;
@@ -404,6 +643,21 @@ $js
 </SCRIPT>
 EOF
 }
+
+=head1 Bugs, Missing Features, and other Oddities
+
+=head2 Javascript
+
+L<HTTP::Recorder> won't record Javascript actions.
+
+=head2 Why are my images corrupted?
+
+HTTP::Recorder only tries to rewrite responses that are of type
+text/*, which it determines by reading the Content-Type header of the
+HTTP::Response object.  However, if the received image gives the
+wrong Content-Type header, it may be corrupted by the recorder.  While
+this may not be pleasant to look at, it shouldn't have an effect on
+your recording session.
 
 =head1 See Also
 
