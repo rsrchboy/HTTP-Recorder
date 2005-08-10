@@ -1,6 +1,18 @@
 Revision history for HTTP::Recorder
 -----------------------------------
 
+0.03_01 9 August 2005
+
+    Support forms with multiple Submit buttons.
+
+    Always use single quotes around arguments.
+
+    Applied a patch from alex@kapranoff.ru (rt.cpan.org #6711) to
+    optionally ignore gets for favicon.ico.  On by default.
+
+    Applied a patch from alex@kapranoff.ru (rt.cpan.org #6646) so
+    that the output script doesn't try to set hidden fields.
+
 0.03_01 1 March 2004
 
     Support for recording SSL

@@ -89,7 +89,7 @@ sub GotoPage {
 	@_
 	);
 
-    $self->Log("get", "\"$args{url}\"");
+    $self->Log("get", "'$args{url}'");
 }
 
 sub FollowLink {
@@ -103,10 +103,10 @@ sub FollowLink {
     if ($args{text}) {
 	$args{text} =~ s/"/\\"/g;
 	$self->Log("follow_link", 
-		   "text => \"$args{text}\", n => \"$args{index}\"");
+		   "text => '$args{text}', n => '$args{index}'");
     } else {
 	$self->Log("follow_link", 
-		   "n => \"$args{index}\"");
+		   "n => '$args{index}'");
     }
 }
 
@@ -142,7 +142,7 @@ sub SetForm {
 	);
 
     if ($args{name}) {
-	$self->Log("form_name", "\"$args{name}\"");
+	$self->Log("form_name", "'$args{name}'");
     } else {
 	$self->Log("form_number", $args{number});
     }
@@ -158,7 +158,11 @@ sub SetField {
 
     return unless $args{name} && $args{value};
 
-    $self->Log("field", "\"$args{name}\", \"$args{value}\"");
+    # escape single quotes
+    $args{name} =~ s/'/\\'/g;
+    $args{value} =~ s/'/\\'/g;
+
+    $self->Log("field", "'$args{name}', '$args{value}'");
 }
 
 sub Submit {
@@ -170,9 +174,12 @@ sub Submit {
     # TODO: use button name, value, number
     # Don't add this until WWW::Mechanize supports it
     if ($args{name}) {
-	$self->Log("submit_form", "form_name => \"$args{name}\"");
+	$self->Log("submit_form", 
+		   "form_name => '$args{name}', button => '$args{button_name}'");
     } else {
-	$self->Log("submit_form", "form_number => \"$args{number}\"");
+	$self->Log("submit_form", 
+		   "form_number => $args{number}, button => '" .
+		   ($args{button_name} || '') . "'");
     }
 }
 

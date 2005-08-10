@@ -6,3 +6,4 @@ t/pod.t
 MANIFEST
 CHANGES
 README
+META.yml                                 Module meta-data (added by MakeMaker)

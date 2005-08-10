@@ -1,16 +1,14 @@
 package HTTP::Recorder;
 
+our $VERSION = "0.03_02";
+
 =head1 NAME
 
 HTTP::Recorder - record interaction with websites
 
 =head1 VERSION
 
-Version 0.02
-
-=cut
-
-our $VERSION = "0.03_01";
+Version <0.03_02>
 
 =head1 SYNOPSIS
 
@@ -71,7 +69,7 @@ our @ISA = qw( LWP::UserAgent );
 
 =head1 Functions
 
-=head2 B<new>
+=head2 new
 
 Creates and returns a new L<HTTP::Recorder> object, referred to as the 'agent'.
 
@@ -90,11 +88,12 @@ sub new {
     $self->{control} = $args{control} || "http-recorder";
     $self->{logger} = $args{logger} || 
 	new HTTP::Recorder::Logger(file => $args{file});
+    $self->{ignore_favicon} = $args{ignore_favicon} || 1;
 
     return $self;
 }
 
-=head2 B<$agent->prefix([$value])>
+=head2 $agent->prefix([$value])
 
 Get or set the prefix string that L<HTTP::Recorder> uses for rewriting
 responses.
@@ -103,7 +102,7 @@ responses.
 
 sub prefix { shift->_elem('prefix',      @_); }
 
-=head2 B<$agent->showwindow([0|1])>
+=head2 $agent->showwindow([0|1])
 
 Get or set whether L<HTTP::Recorder> opens a JavaScript popup window,
 displaying the recorder's control panel.
@@ -112,10 +111,10 @@ displaying the recorder's control panel.
 
 sub showwindow { shift->_elem('showwindow',      @_); }
 
-=head2 B<$agent->control([$value])>
+=head2 $agent->control([$value])
 
 Get or set the URL of L<HTTP::Recorder>'s control panel.  By default,
-the control URL is 'http-proxy'.
+the control URL is 'http-recorder'.
 
 The control URL will display a control panel which will allow you to
 view and edit the current script.
@@ -124,19 +123,31 @@ view and edit the current script.
 
 sub control { shift->_elem('control',      @_); }
 
-=head2 B<$agent->logger([$value])>
+=head2 $agent->logger([$value])
 
 Get or set the logger object.  The default logger is a
 L<HTTP::Recorder::Logger>, which generates L<WWW::Mechanize> scripts.
 
 =cut
 
-sub logger { shift->_elem('logger',      @_); }
+sub logger { 
+    my $self = shift;
+    $self->_elem('logger',      @_);
+}
 
-=head2 B<$agent->file([$value])>
+=head2 B<$agent->ignore_favicon([0|1])>
+
+Get or set ignore_favicon flag that causes L<HTTP::Recorder> to skip
+logging requests which match /favicon\.ico$/.
+
+=cut
+
+sub ignore_favicon { shift->_elem('ignore_favicon',      @_); }
+
+=head2 $agent->file([$value])
 
 Get or set the filename for generated scripts.  The default is
-'/tmp/tmpfile'.
+'/tmp/scriptfile'.
 
 =cut
 
@@ -163,7 +174,7 @@ sub send_request {
 	# there may be an action we need to perform
 	if (exists $arghash->{updatescript}) {
 	    my $script = uri_unescape($arghash->{ScriptContent});
-	    $self->{logger}->SetScript("$script");
+	    $self->{logger}->SetScript($script || '');
 	} elsif (exists $arghash->{clearscript}) {
 	    $self->{logger}->SetScript("");
 	} elsif (exists $arghash->{goto}) {
@@ -184,14 +195,16 @@ sub send_request {
 	    $h = HTTP::Headers->new(Content_Type => 'text/html');
 	    $content = $self->get_recorder_content();
 	}
-	
+
 	$response = HTTP::Response->new(200,
 					"",
 					$h,
 					$content,
 					);
     } else {
-	$request = $self->modify_request ($request);
+	$request = $self->modify_request ($request)
+            unless $self->{ignore_favicon}
+                && $request->uri->path =~ /favicon\.ico$/;
 
 	$response = $self->SUPER::send_request( $request );
 
@@ -357,7 +370,7 @@ sub extract_values {
 sub modify_response {
     my $self = shift;
     my $response = shift;
-    my @forms;
+    my $formcount = 0;
     my $formnumber = 0;
     my $linknumber = 1;
 
@@ -368,6 +381,8 @@ sub modify_response {
     my $p = HTML::TokeParser->new(\$content);
     my $newcontent = "";
     my %links;
+    my %fields;
+    my $formname;
 
     my $js_href = 0;
     my $in_head = 0;
@@ -423,23 +438,25 @@ sub modify_response {
 		}
 		$linknumber++;
 	    } elsif ($tagname eq 'form') {
-		push @forms, $token;
+		$formcount++;
 		$formnumber++;
 	    }
 
 	    # put the hidden field before the real field
 	    # so that it won't be inside
 	    if (!$js_href && 
-		$tagname ne 'form' && scalar @forms == 1) {
+		$tagname ne 'form' && ($formcount == 1)) {
 		# TODO: rewrite submit buttons to support multiple
 		my $formfield;
 		if ($attrs->{name} && $attrs->{type} && 
 		    $attrs->{type} =~ m/submit/i) {
 		    $formfield = ("$self->{prefix}-form-".
 				  $formnumber."-submit-".$attrs->{name});
-		} elsif ($attrs->{name}) {
+		} elsif ($attrs->{name} &&
+                    (!$attrs->{type} || $attrs->{type} !~ m/hidden/i)) {
 		    $formfield = ("$self->{prefix}-form-".
 				  $formnumber."-".$attrs->{name});
+		    $fields{"Form-$formnumber:$attrs->{name}"} = 1;
 		}
 		if ($formfield) {
 		    $newcontent .= "<input type=\"hidden\" name=\"$formfield\" value=1>\n";
@@ -458,7 +475,7 @@ sub modify_response {
 	    }
 	    $newcontent .= (">\n");
 	    if ($tagname eq 'form') {
-		if (scalar @forms == 1) {
+		if ($formcount == 1) {
 		    $newcontent .= $self->rewrite_form_content($attrs->{name} || "",
 							       $formnumber,
 							       $response->base);
@@ -478,7 +495,7 @@ sub modify_response {
 	    $newcontent .= ("</");
 	    $newcontent .= ($tagname.">\n");
 	    if ($tagname eq 'form') {
-		pop @forms;
+		$formcount--;
 	    } elsif ($tagname eq 'a' || $tagname eq 'link') {
 		$js_href = 0;
 	    }
@@ -584,7 +601,6 @@ sub get_recorder_content {
     foreach my $line (@script) {
 	next unless $line;
 	$line =~ s/\n//g;
-	$line =~ s/'/\\'/g;
 	$script .= "$line\n";
     }
 
