@@ -1,6 +1,6 @@
 package HTTP::Recorder;
 
-our $VERSION = "0.03_02";
+our $VERSION = "0.03_03";
 
 =head1 NAME
 
@@ -8,7 +8,7 @@ HTTP::Recorder - record interaction with websites
 
 =head1 VERSION
 
-Version <0.03_02>
+Version <0.03_03>
 
 =head1 SYNOPSIS
 
@@ -173,12 +173,12 @@ sub send_request {
 	
 	# there may be an action we need to perform
 	if (exists $arghash->{updatescript}) {
-	    my $script = uri_unescape($arghash->{ScriptContent});
+	    my $script = uri_unescape(@{$arghash->{ScriptContent}}[0]);
 	    $self->{logger}->SetScript($script || '');
 	} elsif (exists $arghash->{clearscript}) {
 	    $self->{logger}->SetScript("");
 	} elsif (exists $arghash->{goto}) {
-	    my $url = uri_unescape($arghash->{url});
+	    my $url = uri_unescape(@{$arghash->{url}}[0]);
 
 	    my $r = new HTTP::Request("GET", $url);
 	    my $response = $self->send_request( $r );
@@ -204,7 +204,7 @@ sub send_request {
     } else {
 	$request = $self->modify_request ($request)
             unless $self->{ignore_favicon}
-                && $request->uri->path =~ /favicon\.ico$/;
+                && $request->uri->path =~ /favicon\.ico$/i;
 
 	$response = $self->SUPER::send_request( $request );
 
@@ -226,7 +226,7 @@ sub modify_request {
     my $values = extract_values($request);
 
     # log the actions
-    my $action = $values->{"$self->{prefix}-action"};
+    my $action = @{$values->{"$self->{prefix}-action"}}[0];
 
     my $referer = $request->headers->referer;
     if (!$action) {
@@ -239,29 +239,47 @@ sub modify_request {
 	    $self->{logger}->GotoPage(url => $uri);
 	}
     } elsif ($action eq "follow") {
-	$self->{logger}->FollowLink(text => $values->{"$self->{prefix}-text"} || "",
-			    index => $values->{"$self->{prefix}-index"} || "",
-			    url => $values->{"$self->{prefix}-url"});
+	$self->{logger}->FollowLink(text => @{$values->{"$self->{prefix}-text"}}[0] || "",
+			    index => @{$values->{"$self->{prefix}-index"}}[0] || "",
+			    url => @{$values->{"$self->{prefix}-url"}}[0]);
     } elsif ($action eq "submitform") {
 	my %fields;
 	my ($btn_name, $btn_value, $btn_number);
 	foreach my $param (keys %$values) {
-	    if ($param =~ m/^$self->{prefix}-form-(\d+)-submit-(.*?)$/) {
-		my $temp = $param;
-		$temp =~ s/^$self->{prefix}-form-(\d+)-submit-//;
-		$btn_name = $temp if $values->{$temp};
-	    }
-	    if ($param =~ m/^$self->{prefix}-form-(\d+)-(.*?)$/) {
-		my $temp = $param;
-		$temp =~ s/^$self->{prefix}-form-(\d+)-//g;
-		$fields{$temp} = $values->{$temp} if $values->{$temp};
+	    my %fieldhash;
+	    my ($fieldtype, $fieldname);
+	    if ($param =~ /^$self->{prefix}-form(\d+)-(\w+)-(.*)$/) {
+		$fieldtype = $2;
+		$fieldname = $3;
+
+		if ($fieldtype eq 'submit') {
+		    next unless $values->{$fieldname};
+		    $btn_name = $fieldname;
+		    $btn_value = $values->{$fieldname};
+		} else {
+		    next if ($fieldtype eq 'hidden');
+		    next unless $fieldname && exists $values->{$fieldname}[0];
+		    $fieldhash{'name'} = $fieldname;
+		    $fieldhash{'type'} = $fieldtype;
+		    my @tempvalues = @{$values->{$fieldname}};
+		    if ($fieldtype eq 'checkbox') {
+			for (my $i = 0 ; $i < scalar @tempvalues ; $i++) {
+			    $fieldhash{'value'} = $tempvalues[$i];
+			    $fields{"$fieldname-$i"} = \%fieldhash;
+			}
+		    } else {
+			$fieldhash{'value'} = $tempvalues[0];
+			$fields{$fieldname} = \%fieldhash;
+		    }
+		}
 	    }
 	}
 
-	$self->{logger}->SetFieldsAndSubmit(name => $values->{"$self->{prefix}-formname"}, 
-					    number => $values->{"$self->{prefix}-formnumber"},
+	$self->{logger}->SetFieldsAndSubmit(name => @{$values->{"$self->{prefix}-formname"}}[0], 
+					    number => @{$values->{"$self->{prefix}-formnumber"}}[0],
 					    fields => \%fields,
-					    button_name => $btn_name);
+					    button_name => $btn_name,
+					    button_value => $btn_value);
 
 	# log a blank line to give the code a little breathing room
 	$self->{logger}->LogLine();
@@ -327,13 +345,13 @@ sub extract_values {
 	    my @fields = split(/; /, $_);
 	    next unless $fields[1];
 	    $fields[1] =~ s/name="(.*)"/$1/g;
-	    next unless $fields[2];
+	    next unless exists $fields[2];
 	    if ($fields[2] =~ m/^filename/) {
 		$fields[2] = "file here!!";
 	    } else {
 		$fields[2] =~ s/\n//sg;
 	    }
-	    $values->{$fields[1]} = $fields[2];
+	    push (@{$values->{$fields[1]}}, $fields[2]);
 
 	}
     }
@@ -360,7 +378,7 @@ sub extract_values {
             $val = (defined $val) ? uri_unescape($val) : '';
             $key = uri_unescape($key);
 
-	    $values->{$key} = $val if $val;
+	    push (@{$values->{$key}}, $val) if defined $val;
 	}
     }
 
@@ -381,7 +399,6 @@ sub modify_response {
     my $p = HTML::TokeParser->new(\$content);
     my $newcontent = "";
     my %links;
-    my %fields;
     my $formname;
 
     my $js_href = 0;
@@ -446,19 +463,13 @@ sub modify_response {
 	    # so that it won't be inside
 	    if (!$js_href && 
 		$tagname ne 'form' && ($formcount == 1)) {
-		# TODO: rewrite submit buttons to support multiple
-		my $formfield;
-		if ($attrs->{name} && $attrs->{type} && 
-		    $attrs->{type} =~ m/submit/i) {
-		    $formfield = ("$self->{prefix}-form-".
-				  $formnumber."-submit-".$attrs->{name});
-		} elsif ($attrs->{name} &&
-                    (!$attrs->{type} || $attrs->{type} !~ m/hidden/i)) {
-		    $formfield = ("$self->{prefix}-form-".
-				  $formnumber."-".$attrs->{name});
-		    $fields{"Form-$formnumber:$attrs->{name}"} = 1;
-		}
-		if ($formfield) {
+		my ($formfield, $fieldprefix, $fieldtype, $fieldname);
+		$fieldprefix = "$self->{prefix}-form" . $formnumber;
+		$fieldtype = lc($attrs->{type}) || 'unknown';
+		if ($attrs->{name}) {
+		    $fieldname = $attrs->{name};
+		    $formfield = ($fieldprefix . '-' . 
+				  $fieldtype . '-' . $fieldname);
 		    $newcontent .= "<input type=\"hidden\" name=\"$formfield\" value=1>\n";
 		}
 	    }
@@ -499,6 +510,8 @@ sub modify_response {
 	    } elsif ($tagname eq 'a' || $tagname eq 'link') {
 		$js_href = 0;
 	    }
+	} elsif (@$token[0] eq 'PI') {
+	    $newcontent .= (@$token[2]);
 	} else {
 	    $newcontent .= (@$token[1]);
 	}
@@ -605,9 +618,20 @@ sub get_recorder_content {
     }
 
     my $content = <<EOF;
-<html><body>
-<FORM method="POST" action="http://$self->{control}/">
-<table>
+<SCRIPT LANGUAGE="JavaScript">
+<!-- // start
+function scrollScriptAreaToEnd() {
+    scriptarea = document.forms['ScriptForm'].elements['ScriptContent'];
+    scriptarea.scrollTop = scriptarea.scrollHeight;
+    scriptarea.focus();
+}
+// end -->
+</SCRIPT>
+
+<html>
+<body bgcolor="lightgrey" onLoad="javascript:scrollScriptAreaToEnd()">
+<FORM name="ScriptForm" method="POST" action="http://$self->{control}/">
+<table width=100% height=98%>
   <tr>
     <td>
 Goto page: <input name="url" size=40>
@@ -620,23 +644,28 @@ Current Script:
     </td>
   </tr>
   <tr>
-    <td>
-<textarea name="ScriptContent" cols=60 rows=20>
+    <td height=100%>
+      <textarea style="font-size: 10pt;font-family:monospace;width:100%;height:100%" name="ScriptContent">
 $script
 </textarea>
     </td>
   </tr>
   <tr>
     <td align=center>
+      <INPUT TYPE="BUTTON" VALUE="Refresh" onClick="window.location='http://$self->{control}/'">
       <INPUT TYPE="SUBMIT" name="updatescript" VALUE="Update">
-      <INPUT TYPE="SUBMIT" name="clearscript" VALUE="Clear">
+      <INPUT TYPE="SUBMIT" name="clearscript" VALUE="Delete"
+      onClick="if (!confirm('Do you really want to delete the script?')){ return false; }">
       <INPUT TYPE="RESET">
       <INPUT TYPE="SUBMIT" name="savescript" VALUE="Download">
-      <INPUT TYPE="BUTTON" VALUE="Close" onClick="self.close()">
-</td>
     </td>
   </tr>
-<table>
+  <tr>
+    <td align=center>
+      <INPUT TYPE="BUTTON" VALUE="Close Window" onClick="self.close()">
+    </td>
+  </tr>
+</table>
 </body></html>
 EOF
 
@@ -648,7 +677,7 @@ sub script_popup {
 
     my $url = "http://" . $self->control . "/";
     my $js = <<EOF;
-mywin = window.open("$url", "script", "height=400,width=400,toolbar=no,scrollbars=yes,resizable=yes");
+mywin = window.open("$url", "script", "width=400,height=400,toolbar=no,scrollbars=yes,resizable=yes");
 EOF
 
 return <<EOF;
@@ -697,7 +726,7 @@ http://lists.fsck.com/pipermail/http-recorder.
 
 =head1 Author
 
-Copyright 2003-2004 by Linda Julien <leira@cpan.org>
+Copyright 2003-2005 by Linda Julien <leira@cpan.org>
 
 Released under the GNU Public License.
 

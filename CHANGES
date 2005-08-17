@@ -1,7 +1,21 @@
 Revision history for HTTP::Recorder
 -----------------------------------
 
-0.03_01 9 August 2005
+0.03_03 16 August 2005
+    Several improvements to the Control Panel UI
+    - background color for easier reading
+    - script textarea resizes with window
+    - JavaScript confirmation before deleting script
+
+    Recording changes
+    - Log 0, false, and empty values
+    - Use click() instead of submit_form()
+
+    Changed the format of the %fields argument to
+    Logger::SetFieldsAndSubmit.  This is unlikely to affect you unless
+    you've made a subclass or are using that method directly.
+
+0.03_02 9 August 2005
 
     Support forms with multiple Submit buttons.
 

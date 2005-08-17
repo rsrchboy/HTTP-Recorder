@@ -1,13 +1,12 @@
-# http://module-build.sourceforge.net/META-spec.html
 #XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
 name:         HTTP-Recorder
-version:      0.03_02
+version:      0.03_03
 version_from: lib/HTTP/Recorder.pm
 installdirs:  site
 requires:
+    URI::Escape:                   0
     HTML::TokeParser:              0
     LWP::UserAgent:                0
-    URI::Escape:                   0
 
 distribution_type: module
-generated_by: ExtUtils::MakeMaker version 6.17
+generated_by: ExtUtils::MakeMaker version 6.12

@@ -49,8 +49,9 @@ sub SetScript {
 sub Log {
     my $self = shift;
     my $function = shift;
-    my $args = shift;
+    my $args = shift || '';
 
+    return unless $function;
     my $line = $self->{agentname} . "->$function($args);\n";
 
     my $scriptfile = $self->{'file'};
@@ -123,12 +124,19 @@ sub SetFieldsAndSubmit {
 		);
 
     $self->SetForm(name => $args{name}, number => $args{number});
-    foreach my $field (keys %{$args{fields}}) {
-	$self->SetField(name => $field, 
-			value => $args{fields}->{$field});
+
+    my %fields = %{$args{'fields'}};
+    foreach my $field (keys %fields) {
+	if ($fields{$field}{'type'} eq 'checkbox') {
+	    $self->Check(name => $fields{$field}{'name'}, 
+			 value => $fields{$field}{'value'});
+	} else {
+	    $self->SetField(name => $fields{$field}{'name'}, 
+			    value => $fields{$field}{'value'});
+	}
     }
-    $self->Submit(name => $args{name}, 
-		  number => $args{number},
+    # use click instead of submit
+    $self->Click(name => $args{name}, 
 		  button_name => $args{button_name},
 		  button_value => $args{button_value},
 		  button_number => $args{button_number},
@@ -152,6 +160,23 @@ sub SetField {
     my $self = shift;
     my %args = (
 		name => undef,
+		value => '',
+		@_
+		);
+
+    return unless $args{name};
+
+    # escape single quotes
+    $args{name} =~ s/'/\\'/g;
+    $args{value} =~ s/'/\\'/g;
+
+    $self->Log("field", "'$args{name}', '$args{value}'");
+}
+
+sub Check {
+    my $self = shift;
+    my %args = (
+		name => undef,
 		value => undef,
 		@_
 		);
@@ -162,7 +187,24 @@ sub SetField {
     $args{name} =~ s/'/\\'/g;
     $args{value} =~ s/'/\\'/g;
 
-    $self->Log("field", "'$args{name}', '$args{value}'");
+    $self->Log("tick", "'$args{name}', '$args{value}'");
+}
+
+sub UnCheck {
+    my $self = shift;
+    my %args = (
+		name => undef,
+		value => undef,
+		@_
+		);
+
+    return unless $args{name} && $args{value};
+
+    # escape single quotes
+    $args{name} =~ s/'/\\'/g;
+    $args{value} =~ s/'/\\'/g;
+
+    $self->Log("untick", "'$args{name}', '$args{value}'");
 }
 
 sub Submit {
@@ -171,16 +213,39 @@ sub Submit {
 	@_
 	);
 
-    # TODO: use button name, value, number
-    # Don't add this until WWW::Mechanize supports it
+    my $submitargs = '';
     if ($args{name}) {
-	$self->Log("submit_form", 
-		   "form_name => '$args{name}', button => '$args{button_name}'");
-    } else {
-	$self->Log("submit_form", 
-		   "form_number => $args{number}, button => '" .
-		   ($args{button_name} || '') . "'");
+	$submitargs = "form_name => '$args{name}', ";
+    } elsif ($args{number}) {
+	$submitargs = "form_number => '$args{number}'";
     }
+
+    $submitargs .= ', ' if $submitargs;
+
+    if ($args{button_name}) {
+	$submitargs .= "button => $args{button_name}";
+    }
+
+    # TODO: also support button value, number
+    # Don't add this until WWW::Mechanize supports it
+
+    $self->Log("submit_form", $submitargs);
+}
+
+sub Click {
+    my $self = shift;
+    my %args = (
+	@_
+	);
+    
+    my $clickargs;
+    if ($args{button_name}) {
+	$clickargs = "'$args{button_name}'";
+    }
+
+    # TODO: also support button value, number
+    # Don't add this until WWW::Mechanize supports it
+    $self->Log("click", $clickargs);
 }
 
 1;
