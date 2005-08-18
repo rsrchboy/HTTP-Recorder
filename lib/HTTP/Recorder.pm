@@ -1,6 +1,6 @@
 package HTTP::Recorder;
 
-our $VERSION = "0.03_03";
+our $VERSION = "0.04";
 
 =head1 NAME
 
@@ -8,7 +8,7 @@ HTTP::Recorder - record interaction with websites
 
 =head1 VERSION
 
-Version <0.03_03>
+Version 0.04
 
 =head1 SYNOPSIS
 
@@ -38,8 +38,21 @@ Set it up like this:
 
     1;
 
-Then, tell your web browser to use this proxy, and the script will be
-recorded in the specified file.
+Start the proxy script, then change the settings in your web browser
+so that it will use this proxy for web requests.  For more information
+about proxy settings and the default port, see L<HTTP::Proxy>.
+
+The script will be recorded in the specified file, and can be viewed
+and modified via the control panel.
+
+=head2 The Control Panel
+
+HTTP::Proxy provides a control panel.  From this panel, you can view
+the script as it's being recorded, modify it, delete it, etc.
+
+If you use C<< $agent->showwindow(1) >> in your proxy script and you have
+popups enabled in your browser, the control panel will appear as a
+Javascript popup window will appear after each recorded action.
 
 =head2 SSL sessions
 
@@ -64,6 +77,8 @@ use LWP::UserAgent;
 use HTML::TokeParser;
 use HTTP::Recorder::Logger;
 use URI::Escape qw(uri_escape uri_unescape);
+use URI::QueryParam;
+use HTTP::Request::Params;
 
 our @ISA = qw( LWP::UserAgent );
 
@@ -135,10 +150,10 @@ sub logger {
     $self->_elem('logger',      @_);
 }
 
-=head2 B<$agent->ignore_favicon([0|1])>
+=head2 $agent->ignore_favicon([0|1])
 
 Get or set ignore_favicon flag that causes L<HTTP::Recorder> to skip
-logging requests which match /favicon\.ico$/.
+logging requests favicon.ico files.  The value is 1 by default.
 
 =cut
 
@@ -170,15 +185,15 @@ sub send_request {
 	# get the arguments passed from the form
 	my $arghash;
 	$arghash = extract_values($request);
-	
+
 	# there may be an action we need to perform
 	if (exists $arghash->{updatescript}) {
-	    my $script = uri_unescape(@{$arghash->{ScriptContent}}[0]);
+	    my $script = uri_unescape($arghash->{ScriptContent});
 	    $self->{logger}->SetScript($script || '');
 	} elsif (exists $arghash->{clearscript}) {
 	    $self->{logger}->SetScript("");
 	} elsif (exists $arghash->{goto}) {
-	    my $url = uri_unescape(@{$arghash->{url}}[0]);
+	    my $url = uri_unescape($arghash->{url});
 
 	    my $r = new HTTP::Request("GET", $url);
 	    my $response = $self->send_request( $r );
@@ -226,22 +241,21 @@ sub modify_request {
     my $values = extract_values($request);
 
     # log the actions
-    my $action = @{$values->{"$self->{prefix}-action"}}[0];
+    my $action = $values->{"$self->{prefix}-action"};
 
     my $referer = $request->headers->referer;
     if (!$action) {
 	if (!$referer) {
-	    my $uri = $request->uri;
-	    $self->unmodify(\$uri);
+	    my $uri = $self->unmodify($request->uri);;
 
 	    # log a blank line to give the code a little breathing room
 	    $self->{logger}->LogLine();
 	    $self->{logger}->GotoPage(url => $uri);
 	}
     } elsif ($action eq "follow") {
-	$self->{logger}->FollowLink(text => @{$values->{"$self->{prefix}-text"}}[0] || "",
-			    index => @{$values->{"$self->{prefix}-index"}}[0] || "",
-			    url => @{$values->{"$self->{prefix}-url"}}[0]);
+	$self->{logger}->FollowLink(text => $values->{"$self->{prefix}-text"} || "",
+			    index => $values->{"$self->{prefix}-index"} || "",
+			    url => $values->{"$self->{prefix}-url"});
     } elsif ($action eq "submitform") {
 	my %fields;
 	my ($btn_name, $btn_value, $btn_number);
@@ -258,25 +272,26 @@ sub modify_request {
 		    $btn_value = $values->{$fieldname};
 		} else {
 		    next if ($fieldtype eq 'hidden');
-		    next unless $fieldname && exists $values->{$fieldname}[0];
+		    next unless $fieldname && exists $values->{$fieldname};
 		    $fieldhash{'name'} = $fieldname;
 		    $fieldhash{'type'} = $fieldtype;
-		    my @tempvalues = @{$values->{$fieldname}};
-		    if ($fieldtype eq 'checkbox') {
+		    if (ref($values->{$fieldname}) eq 'ARRAY') {
+			my @tempvalues = @{$values->{$fieldname}};
 			for (my $i = 0 ; $i < scalar @tempvalues ; $i++) {
 			    $fieldhash{'value'} = $tempvalues[$i];
-			    $fields{"$fieldname-$i"} = \%fieldhash;
+			    my %temphash = %fieldhash;
+			    $fields{"$fieldname-$i"} = \%temphash;
 			}
 		    } else {
-			$fieldhash{'value'} = $tempvalues[0];
+			$fieldhash{'value'} = $values->{$fieldname};
 			$fields{$fieldname} = \%fieldhash;
 		    }
 		}
 	    }
 	}
 
-	$self->{logger}->SetFieldsAndSubmit(name => @{$values->{"$self->{prefix}-formname"}}[0], 
-					    number => @{$values->{"$self->{prefix}-formnumber"}}[0],
+	$self->{logger}->SetFieldsAndSubmit(name => $values->{"$self->{prefix}-formname"}, 
+					    number => $values->{"$self->{prefix}-formnumber"},
 					    fields => \%fields,
 					    button_name => $btn_name,
 					    button_value => $btn_value);
@@ -299,7 +314,7 @@ sub modify_request {
     my $https = $values->{"$self->{prefix}-https"};
     if ( $https && $https == 1) {
 	my $uri = $request->uri;
-	$uri =~ s/^http:/https:/i;
+	$uri->scheme('https') if $uri->scheme eq 'http';
 
 	$request = new HTTP::Request($request->method, 
 				     $uri, 
@@ -317,72 +332,25 @@ sub unmodify {
 
     return $content unless $content;
 
-    # get rid of the stuff we added
+    # get rid of the arguments we added
     my $prefix = $self->{prefix};
 
-    $content =~ s/$prefix-(.*?)\?(.*?)&//g;
-    $content =~ s/$prefix-(.*?)&//g;
-    $content =~ s/$prefix-(.*?)$//g;
-    $content =~ s/&$//g;
-    $content =~ s/\?$//g;
-
+    for my $key ($content->query_param) {
+	if ($key =~ /^$prefix-/) {
+	    $content->query_param_delete($key);
+	}
+    }
     return $content;
 }
 
 sub extract_values {
     my $request = shift;
 
-    my $values = {};
+    my $parser = HTTP::Request::Params->new({
+	req => $request,
+    });
 
-    if ($request->headers->content_type eq 'multipart/form-data') {
-	my $content = $request->content;
-	my @segments = split(/--+/, $content);
-	foreach (@segments) {
-	    next unless $_;
-	    $_ =~ s/.*Content-Disposition: //s;
-	    $_ =~ s/\r+/\n/sg;
-	    $_ =~ s/\n+/; /sg;
-	    my @fields = split(/; /, $_);
-	    next unless $fields[1];
-	    $fields[1] =~ s/name="(.*)"/$1/g;
-	    next unless exists $fields[2];
-	    if ($fields[2] =~ m/^filename/) {
-		$fields[2] = "file here!!";
-	    } else {
-		$fields[2] =~ s/\n//sg;
-	    }
-	    push (@{$values->{$fields[1]}}, $fields[2]);
-
-	}
-    }
-
-    my $content;
-    if ($request->method eq "POST") {
-	$content = $request->content;
-    } else {
-	my @foo = split(/\?/,$request->uri);
-	$content = $foo[1];
-    }
-
-    return () unless defined $content;
-
-    my(@parts, $key, $val);
-
-    if ($content =~ m/=/ or $content =~ m/&/) {
-
-        $content =~ tr/+/ /;      # RFC1630
-        @parts = split(/&/, $content);
-
-        foreach (@parts) { # Extract into key and value.
-            ($key, $val) = m/^(.*?)=(.*)/;
-            $val = (defined $val) ? uri_unescape($val) : '';
-            $key = uri_unescape($key);
-
-	    push (@{$values->{$key}}, $val) if defined $val;
-	}
-    }
-
-    return $values;
+    return $parser->params;
 }
 
 sub modify_response {
@@ -527,74 +495,58 @@ sub rewrite_href {
     my $href = shift || "";
     my $text = shift || "";
     my $index = shift || 1;
-    my $url = shift;
+    my $base = shift;
 
-    my @parts = split(/\?/, $href);
-    my $realhref = uri_escape($href);
-    my $realargs = $parts[1] || "";
-    my $base = $parts[0];
+    my $newhref = new URI($href);
+    my $prefix = $self->{prefix};
 
-    my $https = 0;
-    $https = 1 if $url->scheme eq 'https';
-
-    # the link text might have special characters in it
-    $text = uri_escape($text);
-
-    # figure out if the link is an anchor on the same page
-    my $anchor;
-    if ($href =~ m/^#/) {
-	$anchor = $href;
-	$base = "";
+    if ($base->scheme eq 'https') {
+	$newhref->query_param_append( "$prefix-https", 1);
+	$newhref->scheme('http');
     }
 
-    $href = "$base?$self->{prefix}-url=$realhref";
-    $href .= "&$self->{prefix}-https=$https" if $https;
-    $href .= "&$realargs" if $realargs;
-    $href .= "&$self->{prefix}-action=follow";
-    $href .= "&$self->{prefix}-text=$text";
-    $href .= "&$self->{prefix}-index=$index";
-    $href .= $anchor if $anchor;
+    # the original URL
+    $newhref->query_param_append( "$prefix-url", uri_escape($href));
+    
+    # the action (i.e. follow link)
+    $newhref->query_param_append( "$prefix-action", 'follow');
 
-    return $href;
+    # the link information
+    $text = uri_escape($text); # might have special characters
+    $newhref->query_param_append( "$prefix-text", $text);
+    $newhref->query_param_append( "$prefix-index", $index);
+
+    return $newhref;
 }
 
 sub rewrite_linkhref {
     my $self = shift;
     my $href = shift || "";
-    my $url = shift;
+    my $base = shift;
 
-    my @parts = split(/\?/, $href);
-    my $realhref = uri_escape($href);
-    my $realargs = $parts[1] || "";
+    my $newhref = new URI($href);
+    my $prefix = $self->{prefix};
 
-    my $https = 0;
-    $https = 1 if $url->scheme eq 'https';
-    my $base = $parts[0];
+    $newhref->query_param_append( "$prefix-https", 1) 
+				  if $base->scheme eq 'https';
 
-    # figure out if the link is an anchor on the same page
-    my $anchor;
-    if ($href =~ m/^#/) {
-	$anchor = $href;
-	$base = "";
-    }
+    # the original URL
+    $newhref->query_param_append( "$prefix-url", uri_escape($href));
+    
+    # the action (i.e. don't record)
+    $newhref->query_param_append( "$prefix-action", 'norecord');
 
-    $href = "$base?$self->{prefix}-url=$realhref";
-    $href .= "&$self->{prefix}-https=$https" if $https;
-    $href .= "&$realargs" if $realargs;
-    $href .= "&$self->{prefix}-action=norecord";
-    $href .= $anchor if $anchor;
-
-    return $href;
+    return $newhref;
 }
 
 sub rewrite_form_content {
     my $self = shift;
     my $name = shift || "";
     my $number = shift;
-    my $fields;
     my $url = shift;
+    my $fields;
 
-    my $https = 1 if ($url =~ m/^https/i);
+    my $https = 1 if ($url->scheme eq 'https');
 
     $fields .= ("<input type=hidden name=\"$self->{prefix}-action\" value=\"submitform\">\n");
     $fields .= ("<input type=hidden name=\"$self->{prefix}-formname\" value=\"$name\">\n");
@@ -629,13 +581,21 @@ function scrollScriptAreaToEnd() {
 </SCRIPT>
 
 <html>
+<head>
+<title>HTTP::Recorder Control Panel</title>
+</head>
 <body bgcolor="lightgrey" onLoad="javascript:scrollScriptAreaToEnd()">
 <FORM name="ScriptForm" method="POST" action="http://$self->{control}/">
 <table width=100% height=98%>
   <tr>
     <td>
-Goto page: <input name="url" size=40>
+Goto page: <input name="url" size=30>
 <input type=submit name="goto" value="Go">
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <hr>
     </td>
   </tr>
   <tr>
@@ -677,7 +637,7 @@ sub script_popup {
 
     my $url = "http://" . $self->control . "/";
     my $js = <<EOF;
-mywin = window.open("$url", "script", "width=400,height=400,toolbar=no,scrollbars=yes,resizable=yes");
+mywin = window.open("$url", "script", "width=400,height=600,toolbar=no,scrollbars=yes,resizable=yes");
 EOF
 
 return <<EOF;
@@ -693,16 +653,17 @@ EOF
 
 =head2 Javascript
 
-L<HTTP::Recorder> won't record Javascript actions.
+L<WWW::Mechanize> can't play back Javascript actions, and
+L<HTTP::Recorder> doesn't record them.
 
 =head2 Why are my images corrupted?
 
 HTTP::Recorder only tries to rewrite responses that are of type
 text/*, which it determines by reading the Content-Type header of the
-HTTP::Response object.  However, if the received image gives the
-wrong Content-Type header, it may be corrupted by the recorder.  While
-this may not be pleasant to look at, it shouldn't have an effect on
-your recording session.
+HTTP::Response object.  However, if the received image gives the wrong
+Content-Type header, it may be corrupted by the recorder.  While this
+may not be pleasant to look at, it shouldn't have an effect on your
+recording session.
 
 =head1 See Also
 
@@ -712,6 +673,11 @@ See also L<LWP::UserAgent>, L<WWW::Mechanize>, L<HTTP::Proxy>.
 
 Please submit any feature requests, suggestions, bugs, or patches at
 http://rt.cpan.org/, or email to bug-HTTP-Recorder@rt.cpan.org.
+
+If you're submitting a bug of the type "X doesn't record correctly,"
+be sure to include a (preferably short and simple) HTML page that
+demonstrates the problem, and a clear explanation of a) what it does
+that it shouldn't, and b) what it should do instead.
 
 =head1 Mailing List
 

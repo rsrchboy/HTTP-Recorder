@@ -8,6 +8,8 @@ WriteMakefile(
     PREREQ_PM	=> { LWP::UserAgent => 0,
                      HTML::TokeParser => 0,
                      URI::Escape => 0,
+                     URI::QueryParam => 0,
+                     HTTP::Request::Params => 0, 
                    },
     ABSTRACT     => '',
 );
