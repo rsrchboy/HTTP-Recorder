@@ -1,6 +1,6 @@
 package HTTP::Recorder;
 
-our $VERSION = "0.04";
+our $VERSION = "0.05";
 
 =head1 NAME
 
@@ -8,12 +8,16 @@ HTTP::Recorder - record interaction with websites
 
 =head1 VERSION
 
-Version 0.04
+Version 0.05
 
 =head1 SYNOPSIS
 
+=head2 Using HTTP::Recorder as a Web Proxy
+
 Set HTTP::Recorder as the user agent for a proxy, and it rewrites HTTP
 responses so that additional requests can be recorded.
+
+=head3 The Proxy Script
 
 Set it up like this:
 
@@ -45,14 +49,23 @@ about proxy settings and the default port, see L<HTTP::Proxy>.
 The script will be recorded in the specified file, and can be viewed
 and modified via the control panel.
 
-=head2 The Control Panel
+=head3 Start Recording
 
-HTTP::Proxy provides a control panel.  From this panel, you can view
-the script as it's being recorded, modify it, delete it, etc.
+Now you can use your browser as your normally would, and your actions
+will be recorded in the file you specified.  Alternatively, you can
+start recording from the Control Panel.
 
-If you use C<< $agent->showwindow(1) >> in your proxy script and you have
-popups enabled in your browser, the control panel will appear as a
-Javascript popup window will appear after each recorded action.
+=head3 Using the Control Panel
+
+If you have Javascript enabled in your browser, go to the
+L<HTTP::Recorder> control URL (http://http-recorder by default),
+optionally type a URL into the "Goto page" field, and click "Go".
+
+In the new window, interact with web sites as you normally do,
+including typing a new address into the address field.  The Control
+Panel will be updated after each recorded action.
+
+The Control Panel allows you to modify, delete, or save your script.
 
 =head2 SSL sessions
 
@@ -99,7 +112,6 @@ sub new {
     bless $self, $class;
 
     $self->{prefix} = $args{prefix} || "rec";
-    $self->{showwindow} = $args{showwindow} || 0;
     $self->{control} = $args{control} || "http-recorder";
     $self->{logger} = $args{logger} || 
 	new HTTP::Recorder::Logger(file => $args{file});
@@ -117,19 +129,10 @@ responses.
 
 sub prefix { shift->_elem('prefix',      @_); }
 
-=head2 $agent->showwindow([0|1])
-
-Get or set whether L<HTTP::Recorder> opens a JavaScript popup window,
-displaying the recorder's control panel.
-
-=cut
-
-sub showwindow { shift->_elem('showwindow',      @_); }
-
 =head2 $agent->control([$value])
 
-Get or set the URL of L<HTTP::Recorder>'s control panel.  By default,
-the control URL is 'http-recorder'.
+Get or set the URL of the control panel.  By default, the control URL
+is 'http-recorder'.
 
 The control URL will display a control panel which will allow you to
 view and edit the current script.
@@ -188,22 +191,28 @@ sub send_request {
 
 	# there may be an action we need to perform
 	if (exists $arghash->{updatescript}) {
-	    my $script = uri_unescape($arghash->{ScriptContent});
+	    my $script = $arghash->{ScriptContent};
 	    $self->{logger}->SetScript($script || '');
 	} elsif (exists $arghash->{clearscript}) {
 	    $self->{logger}->SetScript("");
-	} elsif (exists $arghash->{goto}) {
-	    my $url = uri_unescape($arghash->{url});
+	} 
 
-	    my $r = new HTTP::Request("GET", $url);
-	    my $response = $self->send_request( $r );
-
-	    return $response;
-	}
-	
 	my ($h, $content);
-	if (exists $arghash->{savescript}) {
-	    $h = HTTP::Headers->new(Content_Type => 'text/plain');
+	if (exists $arghash->{goto}) {
+	    my $url = $arghash->{url};
+
+	    if ($url) {
+		my $r = new HTTP::Request("GET", $url);
+		my $response = $self->send_request( $r );
+
+		return $response;
+	    } else {
+		$h = HTTP::Headers->new(Content_Type => 'text/html');
+		$content = $self->get_start_page();
+	    }
+	} elsif (exists $arghash->{savescript}) {
+	    $h = HTTP::Headers->new(Content_Type => 'text/plain',
+				    Content_Disposition => 'attachment; filename=recorder-script.pl');
 	    my @script = $self->{logger}->GetScript();
 	    $content = join('', @script);
 	} else {
@@ -350,6 +359,11 @@ sub extract_values {
 	req => $request,
     });
 
+    # un-escape all params
+    for my $key (keys %{$parser->params}) {
+	$parser->params->{$key} = uri_unescape($parser->params->{$key});
+    }
+
     return $parser->params;
 }
 
@@ -384,9 +398,8 @@ sub modify_response {
 	    } elsif ($in_head && $tagname eq 'base') {
 		$basehref = new URI($attrs->{'base'});
 	    } elsif ($tagname eq 'html') {
-		if ($self->{showwindow}) {
-		    $newcontent .= $self->script_popup();
-		}
+		# add the javascript to update the script
+		$newcontent .= $self->script_update();
 	    } elsif (($tagname eq 'a' || $tagname eq 'link') && 
 		     $attrs->{'href'}) {
 		my $t = $p->get_token();
@@ -558,6 +571,28 @@ sub rewrite_form_content {
     return $fields;
 }
 
+sub get_start_page {
+    my $self = shift;
+
+    my $content = <<EOF;
+<html>
+<head>
+<title>HTTP::Recorder Start Page</title>
+<SCRIPT LANGUAGE="JavaScript">
+<!-- // start
+    self.focus(); // bring this window to the front
+// end -->
+</SCRIPT>
+</head>
+<body>
+<h1>Start Recording</h1>
+<p>Type a url into the browser's adddress field to begin recording.
+</html>
+EOF
+
+    return $content;
+}
+
 sub get_recorder_content {
     my $self = shift;
 
@@ -583,61 +618,77 @@ function scrollScriptAreaToEnd() {
 <html>
 <head>
 <title>HTTP::Recorder Control Panel</title>
+<STYLE type="text/css">
+   table {font-family:Helvetica,sans-serif; font-size:14px}
+   input {font-family:Helvetica,sans-serif; font-size:12px}
+ </STYLE>
 </head>
-<body bgcolor="lightgrey" onLoad="javascript:scrollScriptAreaToEnd()">
-<FORM name="ScriptForm" method="POST" action="http://$self->{control}/">
+<body bgcolor="lightgrey" 
+      onLoad="javascript:scrollScriptAreaToEnd()"
+>
 <table width=100% height=98%>
+<FORM name="GotoForm" method="POST" action="http://$self->{control}/" target="recording">
   <tr>
     <td>
-Goto page: <input name="url" size=30>
-<input type=submit name="goto" value="Go">
-    </td>
-  </tr>
-  <tr>
-    <td>
+      Goto page: <input name="url" size=30>
+      <input type=submit name="goto" value="Go">
       <hr>
     </td>
   </tr>
+</FORM>
   <tr>
-    <td>
+    <td width="100%" height="100%">
+      <table width="100%" height="100%">
+        <FORM name="ScriptForm" method="POST" action="http://$self->{control}/">
+        <tr>
+	  <td>
 Current Script:
+          </td>
+        </tr>
+        <tr>
+          <td height=100%>
+<textarea style="font-size: 10pt;font-family:monospace;width:100%;height:100%" name="ScriptContent">$script</textarea>
+          </td>
+        </tr>
+        <tr>
+          <td align=center>
+            <INPUT TYPE="SUBMIT" name="updatescript" VALUE="Apply">
+            <INPUT TYPE="RESET">
+            <INPUT TYPE="BUTTON" VALUE="Refresh" onClick="window.location='http://$self->{control}/'">
+          </td>
+        </tr>
+        <tr>
+          <td align=center>
+             <INPUT TYPE="SUBMIT" name="clearscript" VALUE="Delete"
+            onClick="if (!confirm('Do you really want to delete the script?')){ return false; }">
+            <INPUT TYPE="SUBMIT" name="savescript" VALUE="Save As">
+          </td>
+        </tr>
+      </FORM>
+      </table>
     </td>
   </tr>
-  <tr>
-    <td height=100%>
-      <textarea style="font-size: 10pt;font-family:monospace;width:100%;height:100%" name="ScriptContent">
-$script
-</textarea>
-    </td>
-  </tr>
-  <tr>
-    <td align=center>
-      <INPUT TYPE="BUTTON" VALUE="Refresh" onClick="window.location='http://$self->{control}/'">
-      <INPUT TYPE="SUBMIT" name="updatescript" VALUE="Update">
-      <INPUT TYPE="SUBMIT" name="clearscript" VALUE="Delete"
-      onClick="if (!confirm('Do you really want to delete the script?')){ return false; }">
-      <INPUT TYPE="RESET">
-      <INPUT TYPE="SUBMIT" name="savescript" VALUE="Download">
-    </td>
-  </tr>
-  <tr>
-    <td align=center>
-      <INPUT TYPE="BUTTON" VALUE="Close Window" onClick="self.close()">
-    </td>
-  </tr>
-</table>
+      </table>
 </body></html>
 EOF
 
     return $content;
 }
 
-sub script_popup {
+sub script_update {
     my $self = shift;
 
     my $url = "http://" . $self->control . "/";
     my $js = <<EOF;
-mywin = window.open("$url", "script", "width=400,height=600,toolbar=no,scrollbars=yes,resizable=yes");
+// find the top-level opener window
+var opwindow = window.opener;
+while (opwindow.opener) {
+  opwindow = opwindow.opener;
+}
+// update it with HTTP::Recorder's control panel
+if (opwindow) {
+ opwindow.location = "http://http-recorder/";
+}
 EOF
 
 return <<EOF;
@@ -679,7 +730,10 @@ be sure to include a (preferably short and simple) HTML page that
 demonstrates the problem, and a clear explanation of a) what it does
 that it shouldn't, and b) what it should do instead.
 
-=head1 Mailing List
+=head1 More information
+
+You can read more about L<HTTP::Recorder>, including browsing the
+current source tree, at http://www.bitmistress.org/.
 
 There's a mailing list for users and developers of HTTP::Recorder.
 You can subscribe at
@@ -687,7 +741,7 @@ http://lists.fsck.com/mailman/listinfo/http-recorder, or by sending
 email to http-recorder-request@lists.fsck.com with the subject
 "subscribe".
 
-The archives can be found at
+Mailing list archives can be found at
 http://lists.fsck.com/pipermail/http-recorder.
 
 =head1 Author

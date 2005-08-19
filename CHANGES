@@ -1,6 +1,22 @@
 Revision history for HTTP::Recorder
 -----------------------------------
 
+0.05 17 August 2005
+   Fixed a bug where link text wasn't being un-escaped before being
+   logged.
+
+   Significant changes in the use of the Control Panel:
+   - The showwindow option is gone (no popups any more).
+   - If you want to use the control panel, you need to start there.
+   - The control panel now spawns a window for navigation.
+   - The navigation window updates the Control Panel via Javascript.
+
+   Download button downloads the script file directly.
+
+0.04 17 August 2005
+    Parse and manipulate parameters with URI::QueryParam and
+    HTTP::Request::Params, rather than doing it by hand.
+
 0.03_03 16 August 2005
     Several improvements to the Control Panel UI
     - background color for easier reading
