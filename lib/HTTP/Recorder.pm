@@ -344,6 +344,9 @@ sub unmodify {
     # get rid of the arguments we added
     my $prefix = $self->{prefix};
 
+    # bug fix for rt 14388 (sscaffidi)
+    $content = URI->new( $content );
+
     for my $key ($content->query_param) {
 	if ($key =~ /^$prefix-/) {
 	    $content->query_param_delete($key);
